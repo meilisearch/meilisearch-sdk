@@ -1,10 +1,13 @@
-use crate::{errors::*, indexes::*, request::*, Rc};
+use crate::{
+    indexes::{IndexStats, JsonIndex},
+    prelude::*,
+};
+use serde::Deserialize;
 use serde_json::{json, Value};
-use serde::{Deserialize};
 use std::collections::HashMap;
 
 /// The top-level struct of the SDK, representing a client containing [indexes](../indexes/struct.Index.html).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Client {
     pub(crate) host: Rc<String>,
     pub(crate) api_key: Rc<String>,
@@ -17,7 +20,7 @@ impl Client {
     /// # Example
     ///
     /// ```
-    /// # use meilisearch_sdk::{client::*, indexes::*};
+    /// # use meilisearch_sdk::prelude::*;
     /// #
     /// // create the client
     /// let client = Client::new("http://localhost:7700", "masterKey");
@@ -25,25 +28,22 @@ impl Client {
     pub fn new(host: impl Into<String>, api_key: impl Into<String>) -> Client {
         Client {
             host: Rc::new(host.into()),
-            api_key: Rc::new(api_key.into())
+            api_key: Rc::new(api_key.into()),
         }
     }
 
-    /// List all [indexes](../indexes/struct.Index.html).
+    /// List all [indexes](Index).
     ///
     /// # Example
     ///
     /// ```
-    /// # use meilisearch_sdk::{client::*, indexes::*};
-    /// # futures::executor::block_on(async move {
-    /// // create the client
-    /// let client = Client::new("http://localhost:7700", "masterKey");
-    ///
-    /// let indexes: Vec<Index> = client.list_all_indexes().await.unwrap();
-    /// println!("{:?}", indexes);
+    /// # use meilisearch_sdk::doc_tests::*;
+    /// # doc_test(async {
+    /// # let (client, index) = init_doc_test("get_stats_doc_test").await;
+    /// let indexes = client.list_all_indexes().await.unwrap();
     /// # });
     /// ```
-    pub async fn list_all_indexes(&self) -> Result<Vec<Index>, Error> {
+    pub async fn list_all_indexes(&self) -> Result<Vec<Index<UnknownDocument>>, Error> {
         let json_indexes = request::<(), Vec<JsonIndex>>(
             &format!("{}/indexes", self.host),
             &self.api_key,
@@ -59,82 +59,110 @@ impl Client {
         Ok(indexes)
     }
 
-    /// Get an [index](../indexes/struct.Index.html).
+    /// Get an [`Index`].
     ///
     /// # Example
     ///
     /// ```
-    /// # use meilisearch_sdk::{client::*, indexes::*};
-    ///
-    /// # futures::executor::block_on(async move {
+    /// # use meilisearch_sdk::doc_tests::*;
+    /// # doc_test(async {
     /// // create the client
     /// let client = Client::new("http://localhost:7700", "masterKey");
-    /// # client.create_index("movies", None).await;
     ///
-    /// // get the index named "movies"
-    /// let movies = client.get_index("movies").await.unwrap();
+    /// // get the index called movies
+    /// // you need to define the `Movie` document before
+    /// let movies = client.get_index::<Movie>("movies").await;
     /// # });
     /// ```
-    pub async fn get_index(&self, uid: impl AsRef<str>) -> Result<Index, Error> {
+    pub async fn get_index<Document: crate::document::Document>(
+        &self,
+        uid: &str,
+    ) -> Result<Index<Document>, Error> {
         Ok(request::<(), JsonIndex>(
-            &format!("{}/indexes/{}", self.host, uid.as_ref()),
+            &format!("{}/indexes/{}", self.host, uid),
             &self.api_key,
             Method::Get,
             200,
-        ).await?
+        )
+        .await?
         .into_index(self))
     }
 
     /// Assume that an [index](../indexes/struct.Index.html) exist and create a corresponding object without any check.
-    pub fn assume_index(&self, uid: impl Into<String>) -> Index {
+    pub fn assume_index<Document: crate::document::Document>(
+        &self,
+        uid: impl Into<String>,
+    ) -> Index<Document> {
         Index {
             uid: Rc::new(uid.into()),
             host: Rc::clone(&self.host),
-            api_key: Rc::clone(&self.api_key)
+            api_key: Rc::clone(&self.api_key),
+            _phantom_document: std::marker::PhantomData,
         }
     }
 
-    /// Create an [index](../indexes/struct.Index.html).
-    /// The second parameter will be used as the primary key of the new index. If it is not specified, MeiliSearch will **try** to infer the primary key.
+    /// Creates an [Index].  
+    ///   
+    /// The second parameter will be used as the primary key of the new index.  
+    /// If it is not specified, MeiliSearch will **try** to infer the primary key.
+    ///
     /// # Example
     ///
     /// ```
-    /// # use meilisearch_sdk::{client::*, indexes::*};
-    /// #
-    /// # futures::executor::block_on(async move {
+    /// # use meilisearch_sdk::doc_tests::*;
+    /// # doc_test(async {
     /// // create the client
     /// let client = Client::new("http://localhost:7700", "masterKey");
     ///
-    /// # if let Ok(mut movies) = client.get_index("movies").await {
-    /// #   movies.delete().await.unwrap();
-    /// # }
     /// // create a new index called movies and access it
-    /// let movies = client.create_index("movies", None).await;
+    /// // you need to define the `Movie` document before
+    /// let movies = client.create_index::<Movie>("movies", None).await;
     /// # });
     /// ```
-    pub async fn create_index(
+    pub async fn create_index<Document: crate::document::Document>(
         &self,
-        uid: impl AsRef<str>,
+        uid: &str,
         primary_key: Option<&str>,
-    ) -> Result<Index, Error> {
+    ) -> Result<Index<Document>, Error> {
         Ok(request::<Value, JsonIndex>(
             &format!("{}/indexes", self.host),
             &self.api_key,
             Method::Post(json!({
-                "uid": uid.as_ref(),
+                "uid": uid,
                 "primaryKey": primary_key,
             })),
             201,
-        ).await?
+        )
+        .await?
         .into_index(self))
     }
 
-    /// Delete an index from its UID if it exists.
+    /// Delete an index from its UID if it exists.  
+    /// 
     /// To delete an index if it exists from the [`Index`] object, use the [Index::delete_if_exists] method.
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// # use meilisearch_sdk::doc_tests::*;
+    /// # doc_test(async {
+    /// # let (client, index) = init_doc_test("delete_index_if_exists_doc_test").await;
+    /// // Ensure that the index exists
+    /// client.get_or_create::<Movie>("movies").await.unwrap();
+    /// 
+    /// // Delete the index
+    /// let was_deleted = client.delete_index_if_exists("movies").await.unwrap();
+    /// assert_eq!(was_deleted, true);
+    /// 
+    /// // Try to delete the index again
+    /// let was_deleted = client.delete_index_if_exists("movies").await.unwrap();
+    /// assert_eq!(was_deleted, false); // It was already deleted so it returns false
+    /// # });
+    /// ```
     pub async fn delete_index_if_exists(&self, uid: &str) -> Result<bool, Error> {
         match self.delete_index(uid).await {
-            Ok (_) => Ok(true),
-            Err (Error::MeiliSearchError {
+            Ok(_) => Ok(true),
+            Err(Error::MeiliSearchError {
                 message: _,
                 error_code: ErrorCode::IndexNotFound,
                 error_type: _,
@@ -145,27 +173,31 @@ impl Client {
     }
 
     /// Delete an index from its UID.
-    /// To delete an index from the [index object](../indexes/struct.Index.html), use [the delete method](../indexes/struct.Index.html#method.delete).
-    pub async fn delete_index(&self, uid: impl AsRef<str>) -> Result<(), Error> {
+    /// To delete an index from the [`Index`], use [the delete method](../indexes/struct.Index.html#method.delete).
+    pub async fn delete_index(&self, uid: &str) -> Result<(), Error> {
         Ok(request::<(), ()>(
-            &format!("{}/indexes/{}", self.host, uid.as_ref()),
+            &format!("{}/indexes/{}", self.host, uid),
             &self.api_key,
             Method::Delete,
             204,
-        ).await?)
+        )
+        .await?)
     }
 
     /// This will try to get an index and create the index if it does not exist.
-    pub async fn get_or_create(&self, uid: impl AsRef<str>) -> Result<Index, Error> {
-        if let Ok(index) = self.get_index(uid.as_ref()).await {
+    pub async fn get_or_create<Document: crate::document::Document>(
+        &self,
+        uid: &str,
+    ) -> Result<Index<Document>, Error> {
+        if let Ok(index) = self.get_index(uid).await {
             Ok(index)
         } else {
             self.create_index(uid, None).await
         }
     }
 
-    /// Alias for [list_all_indexes](#method.list_all_indexes).
-    pub async fn get_indexes(&self) -> Result<Vec<Index>, Error> {
+    /// Alias for [Index::list_all_indexes].
+    pub async fn get_indexes(&self) -> Result<Vec<Index<UnknownDocument>>, Error> {
         self.list_all_indexes().await
     }
 
@@ -174,10 +206,9 @@ impl Client {
     /// # Example
     ///
     /// ```
-    /// # use meilisearch_sdk::{client::*, indexes::*};
-    /// #
-    /// # futures::executor::block_on(async move {
-    /// let client = Client::new("http://localhost:7700", "masterKey");
+    /// # use meilisearch_sdk::doc_tests::*;
+    /// # doc_test(async {
+    /// # let (client, index) = init_doc_test("get_stats_doc_test").await;
     /// let stats = client.get_stats().await.unwrap();
     /// # });
     /// ```
@@ -187,7 +218,8 @@ impl Client {
             &self.api_key,
             Method::Get,
             200,
-        ).await
+        )
+        .await
     }
 
     /// Get health of MeiliSearch server.
@@ -195,10 +227,9 @@ impl Client {
     /// # Example
     ///
     /// ```
-    /// # use meilisearch_sdk::{client::*, errors::{Error, ErrorCode}};
-    /// #
-    /// # futures::executor::block_on(async move {
-    /// let client = Client::new("http://localhost:7700", "masterKey");
+    /// # use meilisearch_sdk::doc_tests::*;
+    /// # doc_test(async {
+    /// # let (client, index) = init_doc_test("health_doc_test").await;
     /// let health = client.health().await.unwrap();
     /// # });
     /// ```
@@ -217,12 +248,11 @@ impl Client {
     /// # Example
     ///
     /// ```
-    /// # use meilisearch_sdk::client::*;
-    /// #
-    /// # futures::executor::block_on(async move {
-    /// let client = Client::new("http://localhost:7700", "masterKey");
-    /// let health = client.is_healthy().await;
-    /// assert_eq!(health, true);
+    /// # use meilisearch_sdk::doc_tests::*;
+    /// # doc_test(async {
+    /// # let (client, index) = init_doc_test("is_healthy_doc_test").await;
+    /// let healthy = client.is_healthy().await;
+    /// assert_eq!(healthy, true);
     /// # });
     /// ```
     pub async fn is_healthy(&self) -> bool {
@@ -238,11 +268,12 @@ impl Client {
     /// # Example
     ///
     /// ```
-    /// # use meilisearch_sdk::{client::*, errors::Error};
-    /// #
-    /// # futures::executor::block_on(async move {
-    /// let client = Client::new("http://localhost:7700", "masterKey");
+    /// # use meilisearch_sdk::doc_tests::*;
+    /// # doc_test(async {
+    /// # let (client, index) = init_doc_test("get_keys_doc_test").await;
     /// let keys = client.get_keys().await.unwrap();
+    /// println!("public key: {:?}", keys.public);
+    /// println!("private key: {:?}", keys.private);
     /// # });
     /// ```
     pub async fn get_keys(&self) -> Result<Keys, Error> {
@@ -251,7 +282,8 @@ impl Client {
             &self.api_key,
             Method::Get,
             200,
-        ).await
+        )
+        .await
     }
 
     /// Get version of the MeiliSearch server.
@@ -259,10 +291,9 @@ impl Client {
     /// # Example
     ///
     /// ```
-    /// # use meilisearch_sdk::{client::*, indexes::*, errors::Error};
-    /// #
-    /// # futures::executor::block_on(async move {
-    /// let client = Client::new("http://localhost:7700", "masterKey");
+    /// # use meilisearch_sdk::doc_tests::*;
+    /// # doc_test(async {
+    /// # let (client, index) = init_doc_test("get_version_doc_test").await;
     /// let version = client.get_version().await.unwrap();
     /// # });
     /// ```
@@ -272,7 +303,8 @@ impl Client {
             &self.api_key,
             Method::Get,
             200,
-        ).await
+        )
+        .await
     }
 }
 
@@ -289,7 +321,7 @@ pub struct ClientStats {
 /// Example:
 ///
 /// ```
-/// # use meilisearch_sdk::{client::*, indexes::*, errors::Error};
+/// # use meilisearch_sdk::prelude::*;
 /// Health {
 ///    status: "available".to_string(),
 /// };
@@ -299,7 +331,7 @@ pub struct Health {
     pub status: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Keys {
     pub public: Option<String>,
@@ -311,7 +343,7 @@ pub struct Keys {
 /// Example:
 ///
 /// ```
-/// # use meilisearch_sdk::{client::*, indexes::*, errors::Error};
+/// # use meilisearch_sdk::{prelude::*, client::Version};
 /// Version {
 ///    commit_sha: "b46889b5f0f2f8b91438a08a358ba8f05fc09fc1".to_string(),
 ///    build_date: "2019-11-15T09:51:54.278247+00:00".to_string(),
@@ -324,36 +356,4 @@ pub struct Version {
     pub commit_sha: String,
     pub build_date: String,
     pub pkg_version: String,
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::{client::*};
-    use futures_await_test::async_test;
-
-    #[async_test]
-    async fn test_get_keys() {
-        let client = Client::new("http://localhost:7700", "masterKey");
-        client.get_keys().await.unwrap();
-    }
-
-    #[async_test]
-    async fn test_delete_if_exits() {
-        let client = Client::new("http://localhost:7700", "masterKey");
-        let index_name = "movies_delete_if_exists";
-        client.create_index(index_name, None).await.unwrap();
-        let mut index = client.get_index(index_name).await;
-        assert!(index.is_ok());
-        let deleted = client.delete_index_if_exists(index_name).await.unwrap();
-        assert_eq!(deleted, true);
-        index = client.get_index(index_name).await;
-        assert!(index.is_err());
-    }
-
-    #[async_test]
-    async fn test_delete_if_exits_none() {
-        let client = Client::new("http://localhost:7700", "masterKey");
-        let deleted = client.delete_index_if_exists("bad").await.unwrap();
-        assert_eq!(deleted, false);
-    }
 }

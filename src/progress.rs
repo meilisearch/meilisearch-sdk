@@ -1,6 +1,6 @@
 #![allow(missing_docs)]
 
-use crate::{errors::Error, indexes::Index, request::*, Rc};
+use crate::prelude::*;
 use serde::Deserialize;
 use std::{collections::{BTreeMap, BTreeSet}, time::Duration};
 
@@ -11,7 +11,7 @@ pub(crate) struct ProgressJson {
 }
 
 impl ProgressJson {
-    pub(crate) fn into_progress(self, index: &Index) -> Progress {
+    pub(crate) fn into_progress<Document: crate::document::Document>(self, index: &Index<Document>) -> Progress {
         Progress {
             id: self.update_id,
             index_uid: Rc::clone(&index.uid),
@@ -32,7 +32,7 @@ pub struct Progress {
 impl<'a> Progress {
     ///
     /// ```
-    /// # use meilisearch_sdk::{client::*, indexes::*, document::*};
+    /// # use meilisearch_sdk::prelude::*;
     /// # futures::executor::block_on(async move {
     /// let client = Client::new("http://localhost:7700", "masterKey");
     /// let mut movies_index = client.get_or_create("movies").await.unwrap();
@@ -48,7 +48,7 @@ impl<'a> Progress {
     /// # Example
     ///
     /// ```
-    /// # use meilisearch_sdk::{client::*, indexes::*, document::*};
+    /// # use meilisearch_sdk::prelude::*;
     /// # futures::executor::block_on(async move {
     /// let client = Client::new("http://localhost:7700", "masterKey");
     /// let mut movies_index = client.get_or_create("movies").await.unwrap();
@@ -80,7 +80,7 @@ impl<'a> Progress {
     /// # Example
     ///
     /// ```
-    /// # use meilisearch_sdk::{client::*, document, indexes::*, progress::*};
+    /// # use meilisearch_sdk::prelude::*;
     /// # use serde::{Serialize, Deserialize};
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -90,7 +90,7 @@ impl<'a> Progress {
     /// #    kind: String,
     /// # }
     /// # 
-    /// # impl document::Document for Document {
+    /// # impl meilisearch_sdk::document::Document for Document {
     /// #    type UIDType = usize;
     /// #
     /// #    fn get_uid(&self) -> &Self::UIDType {
@@ -257,10 +257,10 @@ pub enum UpdateStatus {
 
 #[cfg(test)]
 mod test {
-    use crate::{client::*, document, progress::*};
+    use crate::prelude::*;
     use serde::{Serialize, Deserialize};
     use futures_await_test::async_test;
-    use std::time;
+    use std::time::{Duration, Instant};
 
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
     struct Document {
@@ -269,7 +269,7 @@ mod test {
        kind: String,
     }
     
-    impl document::Document for Document {
+    impl crate::document::Document for Document {
        type UIDType = usize;
     
        fn get_uid(&self) -> &Self::UIDType {
@@ -280,7 +280,7 @@ mod test {
     #[async_test]
     async fn test_wait_for_pending_updates_with_args() {
         let client = Client::new("http://localhost:7700", "masterKey");
-        let movies = client.get_or_create("movies_wait_for_pending_args").await.unwrap();
+        let movies = client.get_or_create::<UnknownDocument>("movies_wait_for_pending_args").await.unwrap();
         let progress = movies.add_documents(&[
             Document {
                 id: 0,
@@ -304,7 +304,7 @@ mod test {
     #[async_test]
     async fn test_wait_for_pending_updates_time_out() {
         let client = Client::new("http://localhost:7700", "masterKey");
-        let movies = client.get_or_create("movies_wait_for_pending_timeout").await.unwrap();
+        let movies = client.get_or_create::<UnknownDocument>("movies_wait_for_pending_timeout").await.unwrap();
         let progress = movies.add_documents(&[
             Document {
                 id: 0,
@@ -322,15 +322,15 @@ mod test {
         ).await;
     
         client.delete_index("movies_wait_for_pending_timeout").await.unwrap();
-        assert_eq!(status.is_none(), true);
+        assert!(status.is_none());
     }
 
     #[async_test]
     async fn test_async_sleep() {
-        let sleep_duration = time::Duration::from_millis(10);
-        let now = time::Instant::now();
+        let sleep_duration = Duration::from_millis(10);
+        let now = Instant::now();
 
-        async_sleep(sleep_duration).await;
+        super::async_sleep(sleep_duration).await;
 
         assert!(now.elapsed() >= sleep_duration);
     }
